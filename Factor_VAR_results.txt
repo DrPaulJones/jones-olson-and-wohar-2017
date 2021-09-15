@@ -1,0 +1,220 @@
+open data
+calendar(m) 1961:01
+data(format=xlsx,org=columns) 1961:01 2014:10
+tab
+print / rse
+
+print / rint tb3ms
+
+set inf_forecast = tb3ms - rint
+
+set FEDFUNDS1 = FEDFUNDS - inf_forecast
+set CP3M1 = CP3M - inf_forecast
+set TB6MS1 = TB6MS - inf_forecast
+set GS11 = GS1 - inf_forecast
+set GS51 = GS5 - inf_forecast
+set GS101 = GS10 - inf_forecast
+set AAA1 = AAA - inf_forecast
+set BAA1 = BAA - inf_forecast
+
+
+set inflation = CPIAUCSL
+set output = indpro
+
+*****************************START HERE***********************
+*****Output and Income*******
+@PRINCOMP(ncomps=1,corr,center) / pcomp
+# RPI W875RX1  $
+DPCERA CMRMTSPLx  RETAILx IPFPNSS $
+IPFINAL IPCONGD $
+IPDCONGD IPNCONGD IPBUSEQ $
+IPMAT IPDMAT IPNMAT $
+IPMANSICS IPB51222S $
+IPFUELS NAPMPI $
+CLF16OV CE16OV  $
+PAYEMS USGOOD  CES1021000001 USCONS  MANEMP DMANEMP $
+NDMANEMP SRVPRD $
+USTPU USWTRADE  $
+USTRADE USFIRE  $
+USGOVT CES0600000007 $
+AWOTMAN AWHMAN $
+NAPMEI CES068  CES28 CES308 HOUST HOUSTNE HOUSTMW HOUSTS HOUSTW PERMIT PERMITNE PERMITMW PERMITS PERMITW $
+NAPM NAPMNOI  $
+NAPMSDI NAPMII   $
+AMDMNOx AMDMUOx  $
+BUSINVx ISRATIOx
+set pc1 = pcomp(1)
+clear pcomp
+
+*****Money and Credit*****
+@PRINCOMP(ncomps=1,corr,center) / pcomp
+# M1SL M2SL M2REAL $
+AMBSL TOTRESNS  $
+NONBORRES BUSLOANS $
+REALLN NONREVSL  $
+CONSPI MZMSL INVEST DTCOLNVHFNM  $
+DTCTHFNM
+set pc2 = pcomp(1)
+clear pcomp
+
+*****Interest Rates Rates******
+@PRINCOMP(ncomps=1,corr,center) / pcomp
+# FEDFUNDS1 CP3M1  $
+TB6MS1 GS11   $
+GS51 GS101 AAA1 $
+BAA1
+set pc3 = pcomp(1)
+clear pcomp
+
+****Prices*****
+@PRINCOMP(ncomps=1,corr,center) / pcomp
+# PPIFGS PPIFCG  $
+PPIITM PPICRM   $
+oilprice PPICMM    $
+NAPMPRI CPIAPPSL $
+CPITRNSL CPIMEDSL CUSR0000SAC $
+CUUR0000SAD CUSR0000SAS   $
+CPIULFSL CUUR0000SA0L2   $
+CUSR0000SA0L5 $
+PCEPI DD_1  $
+DD_2 DD_3
+set pc4 = pcomp(1)
+
+
+gra 1; # pc1
+
+@varlagselect(print,crit=aic,det=constant,lags=12)
+# pc1 pc3 pc4 rse rint output inflation
+
+
+
+****************************************Estimating the FAVAR******************************
+
+compute lags=6
+compute nstep=24
+compute ndraws=5000
+
+gra 1; # rse
+
+system(model=vecm)
+variables rse rint output inflation pc3 pc1 pc4
+lags 1 to lags
+det constant
+end(system)
+estimate(outsigma=s,residuals=resid,print) /
+
+
+compute nvar   =%nvar
+compute fxx    =%decomp(%xx)
+compute fwish  =%decomp(inv(%nobs*%sigma))
+compute wishdof=%nobs-%nreg
+compute betaols=%modelgetcoeffs(vecm)
+*
+*
+declare vect[rect] %%responses(ndraws)
+declare rect[series] impulses(nvar,nvar)
+
+infobox(action=define,progress,lower=1,upper=ndraws) "Monte Carlo Integration"
+do draw=1,ndraws
+
+   if %clock(draw,2)==1 {
+      compute sigmad  =%ranwisharti(fwish,wishdof)
+      compute fsigma  =%decomp(sigmad)
+      compute betau   =%ranmvkron(fsigma,fxx)
+      compute betadraw=betaols+betau
+   }
+   else
+      compute betadraw=betaols-betau
+     compute %modelsetcoeffs(vecm,betadraw)
+   impulse(factor=(sigmad*inv(%diag(%sqrt(%xdiag(sigmad))))),results=impulses,steps=nstep,model=vecm,noprint)
+
+do i=1,nvar
+    do j=1,nvar
+      set impulses(i,j) = impulses(i,j)/%sigma(i,i)**0.5
+    end do j
+end do i
+do i=1,nvar
+    do j=1,nvar
+      acc impulses(i,j)
+    end do j
+end do i
+
+
+
+*Save the impulse responses
+                *
+   dim %%responses(draw)(nvar*nvar,nstep)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+   infobox(current=draw)
+end do draw
+infobox(action=remove)
+@mcgraphirf(model=vecm, page=byshock,columns=2,shocklabels=|| "RSE", "Real Interest Rate", "Output", "Inflation", $
+"Real Interest Rate Factor", "Output Factor",  "Inflation Factor"||, varlabels=|| "RSE", "Real Interest Rate", "Output", "Inflation","Real Interest Rate Factor", "Output Factor",  "Inflation Factor" ||)
+
+****************************************Estimating the FAVAR - Include FedFunds and PC2******************************
+
+compute lags=6
+compute nstep=24
+compute ndraws=5000
+
+gra 1; # fedfunds
+
+system(model=vecm)
+variables rse rint output inflation fedfunds pc3 pc1 pc4 pc2
+lags 1 to lags
+det constant
+end(system)
+estimate(outsigma=s,residuals=resid,print) /
+
+
+compute nvar   =%nvar
+compute fxx    =%decomp(%xx)
+compute fwish  =%decomp(inv(%nobs*%sigma))
+compute wishdof=%nobs-%nreg
+compute betaols=%modelgetcoeffs(vecm)
+*
+*
+declare vect[rect] %%responses(ndraws)
+declare rect[series] impulses(nvar,nvar)
+
+infobox(action=define,progress,lower=1,upper=ndraws) "Monte Carlo Integration"
+do draw=1,ndraws
+
+   if %clock(draw,2)==1 {
+      compute sigmad  =%ranwisharti(fwish,wishdof)
+      compute fsigma  =%decomp(sigmad)
+      compute betau   =%ranmvkron(fsigma,fxx)
+      compute betadraw=betaols+betau
+   }
+   else
+      compute betadraw=betaols-betau
+     compute %modelsetcoeffs(vecm,betadraw)
+   impulse(factor=(sigmad*inv(%diag(%sqrt(%xdiag(sigmad))))),results=impulses,steps=nstep,model=vecm,noprint)
+
+do i=1,nvar
+    do j=1,nvar
+      set impulses(i,j) = impulses(i,j)/%sigma(i,i)**0.5
+    end do j
+end do i
+do i=1,nvar
+    do j=1,nvar
+      acc impulses(i,j)
+    end do j
+end do i
+
+
+
+*Save the impulse responses
+                *
+   dim %%responses(draw)(nvar*nvar,nstep)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+   infobox(current=draw)
+end do draw
+infobox(action=remove)
+@mcgraphirf(model=vecm, page=byshock,columns=2,shocklabels=|| "RSE", "Real Interest Rate", "Output", "Inflation", "Fed Funds Rate", $
+"Real Interest Rate Factor", "Output Factor",  "Inflation Factor", "Money Factor"||, varlabels=|| "RSE", "Real Interest Rate", "Output", "Inflation","Fed Funds Rate", $
+"Real Interest Rate Factor", "Output Factor",  "Inflation Factor", "Money Factor" ||)
+
+
+
+
